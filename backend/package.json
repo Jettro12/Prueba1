@@ -1,0 +1,10 @@
+{
+  "name": "mi-backend",
+  "version": "1.0.0",
+  "description": "API simple para AWS",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {}
+}
