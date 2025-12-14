@@ -1,4 +1,4 @@
-name: Deploy Infrastructure and App
+name: Deploy Multi-Account Infrastructure
 
 on:
   push:
@@ -7,20 +7,24 @@ on:
 
 jobs:
   terraform:
-    name: "Terraform Apply"
+    name: "Terraform Apply Multi-Account"
     runs-on: ubuntu-latest
+
+    # AQUÍ ESTÁ LA CLAVE: Mapeamos los Secretos a Variables de Terraform
+    env:
+      # Credenciales Cuenta 1 (Backend) -> Mapean a var.creds_backend_...
+      TF_VAR_creds_backend_access: ${{ secrets.BACKEND_ACCESS_KEY }}
+      TF_VAR_creds_backend_secret: ${{ secrets.BACKEND_SECRET_KEY }}
+      TF_VAR_creds_backend_token: ${{ secrets.BACKEND_SESSION_TOKEN }}
+
+      # Credenciales Cuenta 2 (Frontend) -> Mapean a var.creds_frontend_...
+      TF_VAR_creds_frontend_access: ${{ secrets.FRONTEND_ACCESS_KEY }}
+      TF_VAR_creds_frontend_secret: ${{ secrets.FRONTEND_SECRET_KEY }}
+      TF_VAR_creds_frontend_token: ${{ secrets.FRONTEND_SESSION_TOKEN }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }} # ¡Ojo con esto!
-          aws-region: us-east-1
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
@@ -28,12 +32,11 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
-      # TRUCO: Marcamos las instancias como "dañadas" (taint).
-      # Esto obliga a Terraform a destruirlas y crearlas de nuevo.
-      # Es necesario para que vuelvan a descargar el código nuevo de GitHub.
-      - name: Force Instance Re-creation
+      # Truco para forzar que redescargue el código si cambiaste algo en la App
+      # (Solo necesario si tus instancias no son Auto Scaling Groups)
+      - name: Taint instances to force update
+        continue-on-error: true
         run: |
-          # El "|| true" es para que no falle si es la primera vez que se corre
           terraform taint aws_instance.servidor_backend || true
           terraform taint aws_instance.servidor_frontend || true
 
