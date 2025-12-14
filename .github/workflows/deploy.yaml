@@ -1,4 +1,4 @@
-name: Deploy Multi-Account Infrastructure
+name: Deploy App Updates (Multi-Account)
 
 on:
   push:
@@ -6,18 +6,15 @@ on:
       - main
 
 jobs:
-  terraform:
-    name: "Terraform Apply Multi-Account"
+  deploy:
+    name: "Update Infra & Code"
     runs-on: ubuntu-latest
 
-    # AQUÍ ESTÁ LA CLAVE: Mapeamos los Secretos a Variables de Terraform
+    # Mapeamos los Secretos a Variables de Terraform
     env:
-      # Credenciales Cuenta 1 (Backend) -> Mapean a var.creds_backend_...
       TF_VAR_creds_backend_access: ${{ secrets.BACKEND_ACCESS_KEY }}
       TF_VAR_creds_backend_secret: ${{ secrets.BACKEND_SECRET_KEY }}
       TF_VAR_creds_backend_token: ${{ secrets.BACKEND_SESSION_TOKEN }}
-
-      # Credenciales Cuenta 2 (Frontend) -> Mapean a var.creds_frontend_...
       TF_VAR_creds_frontend_access: ${{ secrets.FRONTEND_ACCESS_KEY }}
       TF_VAR_creds_frontend_secret: ${{ secrets.FRONTEND_SECRET_KEY }}
       TF_VAR_creds_frontend_token: ${{ secrets.FRONTEND_SESSION_TOKEN }}
@@ -32,13 +29,46 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
-      # Truco para forzar que redescargue el código si cambiaste algo en la App
-      # (Solo necesario si tus instancias no son Auto Scaling Groups)
-      - name: Taint instances to force update
-        continue-on-error: true
-        run: |
-          terraform taint aws_instance.servidor_backend || true
-          terraform taint aws_instance.servidor_frontend || true
-
+      # 1. Aseguramos que la infraestructura base exista
       - name: Terraform Apply
         run: terraform apply -auto-approve
+
+      # ======================================================
+      #  PASO CLAVE: ACTUALIZAR EL BACKEND (Cuenta 1)
+      # ======================================================
+      - name: Configure AWS Credentials (Backend)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.BACKEND_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.BACKEND_SECRET_KEY }}
+          aws-session-token: ${{ secrets.BACKEND_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Refresh Backend Instances
+        run: |
+          # Esto obliga al ASG a rotar las instancias viejas por nuevas
+          # que descargarán el nuevo código de GitHub.
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name asg-backend-cluster \
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 60}'
+
+          echo "🚀 Actualización del Backend iniciada..."
+
+      # ======================================================
+      #  PASO CLAVE: ACTUALIZAR EL FRONTEND (Cuenta 2)
+      # ======================================================
+      - name: Configure AWS Credentials (Frontend)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.FRONTEND_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.FRONTEND_SECRET_KEY }}
+          aws-session-token: ${{ secrets.FRONTEND_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Refresh Frontend Instances
+        run: |
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name asg-frontend-cluster \
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 60}'
+            
+          echo "🚀 Actualización del Frontend iniciada..."
