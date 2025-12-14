@@ -1,4 +1,4 @@
-name: Deploy App Updates (Multi-Account)
+name: Deploy Multi-Account Bulldozer
 
 on:
   push:
@@ -6,37 +6,18 @@ on:
       - main
 
 jobs:
-  deploy:
-    name: "Update Infra & Code"
+  refresh-instances:
+    name: "Update Both Accounts"
     runs-on: ubuntu-latest
-
-    # Mapeamos los Secretos a Variables de Terraform
-    env:
-      TF_VAR_creds_backend_access: ${{ secrets.BACKEND_ACCESS_KEY }}
-      TF_VAR_creds_backend_secret: ${{ secrets.BACKEND_SECRET_KEY }}
-      TF_VAR_creds_backend_token: ${{ secrets.BACKEND_SESSION_TOKEN }}
-      TF_VAR_creds_frontend_access: ${{ secrets.FRONTEND_ACCESS_KEY }}
-      TF_VAR_creds_frontend_secret: ${{ secrets.FRONTEND_SECRET_KEY }}
-      TF_VAR_creds_frontend_token: ${{ secrets.FRONTEND_SESSION_TOKEN }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-
-      - name: Terraform Init
-        run: terraform init
-
-      # 1. Aseguramos que la infraestructura base exista
-      - name: Terraform Apply
-        run: terraform apply -auto-approve
-
       # ======================================================
-      #  PASO CLAVE: ACTUALIZAR EL BACKEND (Cuenta 1)
+      #  1. ACTUALIZAR BACKEND (CUENTA 1)
       # ======================================================
-      - name: Configure AWS Credentials (Backend)
+      - name: Auth AWS Backend
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.BACKEND_ACCESS_KEY }}
@@ -44,20 +25,42 @@ jobs:
           aws-session-token: ${{ secrets.BACKEND_SESSION_TOKEN }}
           aws-region: us-east-1
 
-      - name: Refresh Backend Instances
+      - name: Bulldozer Script - Backend
         run: |
-          # Esto obliga al ASG a rotar las instancias viejas por nuevas
-          # que descargarán el nuevo código de GitHub.
+          # Nombre exacto que pusiste en tu main.tf para el ASG del Backend
+          ASG_NAME="asg-backend-cluster"
+
+          echo "🔧 [BACKEND] Iniciando protocolo Bulldozer..."
+
+          # 1. Intentar cancelar refresh previo
+          aws autoscaling cancel-instance-refresh --auto-scaling-group-name $ASG_NAME 2>/dev/null || echo "   ℹ️ Nada que cancelar."
+
+          # 2. Bucle de espera (Polling)
+          echo "⏳ [BACKEND] Esperando liberación del ASG..."
+          while true; do
+            STATUS=$(aws autoscaling describe-instance-refreshes --auto-scaling-group-name $ASG_NAME \
+              --query 'InstanceRefreshes[0].Status' --output text)
+            
+            echo "   Estado actual: $STATUS"
+            
+            if [[ "$STATUS" == "None" || "$STATUS" == "Successful" || "$STATUS" == "Failed" || "$STATUS" == "Cancelled" ]]; then
+              echo "✅ [BACKEND] ASG listo."
+              break
+            fi
+            sleep 5
+          done
+
+          # 3. Lanzar actualización (MinHealthyPercentage: 0 causa una caída breve, pero es rápido)
+          echo "🚀 [BACKEND] ¡Actualizando instancias!"
           aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name asg-backend-cluster \
-            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 60}'
-
-          echo "🚀 Actualización del Backend iniciada..."
+            --auto-scaling-group-name $ASG_NAME \
+            --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 0}' \
+            --strategy Rolling
 
       # ======================================================
-      #  PASO CLAVE: ACTUALIZAR EL FRONTEND (Cuenta 2)
+      #  2. ACTUALIZAR FRONTEND (CUENTA 2)
       # ======================================================
-      - name: Configure AWS Credentials (Frontend)
+      - name: Auth AWS Frontend
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.FRONTEND_ACCESS_KEY }}
@@ -65,10 +68,31 @@ jobs:
           aws-session-token: ${{ secrets.FRONTEND_SESSION_TOKEN }}
           aws-region: us-east-1
 
-      - name: Refresh Frontend Instances
+      - name: Bulldozer Script - Frontend
         run: |
-          aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name asg-frontend-cluster \
-            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 60}'
+          # Nombre exacto que pusiste en tu main.tf para el ASG del Frontend
+          ASG_NAME="asg-frontend-cluster"
+
+          echo "🔧 [FRONTEND] Iniciando protocolo Bulldozer..."
+
+          aws autoscaling cancel-instance-refresh --auto-scaling-group-name $ASG_NAME 2>/dev/null || echo "   ℹ️ Nada que cancelar."
+
+          echo "⏳ [FRONTEND] Esperando liberación del ASG..."
+          while true; do
+            STATUS=$(aws autoscaling describe-instance-refreshes --auto-scaling-group-name $ASG_NAME \
+              --query 'InstanceRefreshes[0].Status' --output text)
             
-          echo "🚀 Actualización del Frontend iniciada..."
+            echo "   Estado actual: $STATUS"
+            
+            if [[ "$STATUS" == "None" || "$STATUS" == "Successful" || "$STATUS" == "Failed" || "$STATUS" == "Cancelled" ]]; then
+              echo "✅ [FRONTEND] ASG listo."
+              break
+            fi
+            sleep 5
+          done
+
+          echo "🚀 [FRONTEND] ¡Actualizando instancias!"
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name $ASG_NAME \
+            --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 0}' \
+            --strategy Rolling
